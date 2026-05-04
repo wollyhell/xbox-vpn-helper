@@ -8,13 +8,15 @@ It is designed for the setup:
 
 The app wraps a fragile manual workflow into a small desktop tool with a simple mode, an advanced diagnostics mode, and automatic recovery for common interface conflicts.
 
+Maintained as an open-source utility by `wolly_well_games`.
+
 ## Overview
 
 `Xbox VPN Helper` turns a messy networking workaround into a repeatable desktop workflow.
 
 Instead of manually hunting for the current `utunX`, reassigning `10.0.0.1`, resetting `pf`, checking whether the USB Ethernet adapter came back as `en5` or some other `enX`, and then rebooting the console at the right moment, the app guides the process from one place.
 
-The project was built from a real-world internal setup and then cleaned up into a standalone open-source app. The goal is not to hide how macOS networking works, but to make a difficult, failure-prone sequence easier to run, debug, and recover.
+The project was built from a real-world internal setup at `wolly_well_games` and then cleaned up into a standalone open-source app. The goal is not to hide how macOS networking works, but to make a difficult, failure-prone sequence easier to run, debug, and recover.
 
 ## Features
 
@@ -90,4 +92,4 @@ The built app bundle is created at:
 
 ## Project status
 
-This is an open-source utility extracted from a real-world internal workflow and hardened into a standalone app. It is useful, but still intentionally transparent and somewhat low-level: the goal is reproducible control rather than pretending macOS networking is simpler than it is.
+This is an open-source utility extracted from a real-world internal workflow at `wolly_well_games` and hardened into a standalone app. It is useful, but still intentionally transparent and somewhat low-level: the goal is reproducible control rather than pretending macOS networking is simpler than it is.

@@ -2,6 +2,8 @@
 
 `Xbox VPN Helper` is now available as an open-source macOS utility for routing an Xbox through a Mac's active VPN connection over USB Ethernet.
 
+The project is maintained by `wolly_well_games`.
+
 This first public release packages a real-world internal workflow into a standalone desktop app with:
 
 - a simple one-button mode for normal use
