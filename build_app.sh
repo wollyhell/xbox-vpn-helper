@@ -52,7 +52,7 @@ fi
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>local.openclaw.xbox-vpn-helper</string>
+    <string>games.vyatkino.xbox-vpn-helper</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
