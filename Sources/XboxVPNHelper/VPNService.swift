@@ -135,7 +135,7 @@ struct VPNService {
         SUBNET_MASK="255.255.255.0"
         SOURCE_CIDR="10.0.0.0/24"
         ANCHOR_NAME="com.apple/xboxvpn"
-        PF_RULES_FILE="/tmp/games.vyatkino.xboxvpn.pf.conf"
+        PF_RULES_FILE="/tmp/wolly_well_games.xboxvpn.pf.conf"
 
         detect_ethernet_if() {
           if /sbin/ifconfig "$PREFERRED_ETH_IF" >/dev/null 2>&1; then
