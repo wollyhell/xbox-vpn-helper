@@ -95,6 +95,8 @@ struct AppSnapshot {
     var xboxVisibleOnLAN = false
     var ipForwardingEnabled = false
     var caffeinateRunning = false
+    var guardInstalled = false
+    var guardRunning = false
     var pfAnchorStatus = "Проверка NAT требует прав администратора."
     var items: [StatusItem] = []
 

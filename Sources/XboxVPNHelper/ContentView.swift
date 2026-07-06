@@ -179,6 +179,7 @@ final class AppViewModel: ObservableObject {
         Mac IP: \(snapshot.ethernetHasExpectedIP ? "на месте" : "отсутствует")
         Xbox: \(snapshot.xboxVisibleOnLAN ? "виден" : "не виден")
         Форвардинг: \(snapshot.ipForwardingEnabled ? "включён" : "выключен")
+        Автопочинка: \(snapshot.guardRunning ? "запущена" : "не запущена")
         Caffeinate: \(snapshot.caffeinateRunning ? "запущен" : "не запущен")
         """
     }

@@ -51,7 +51,8 @@ struct VPNService {
         let forwarding = try CommandRunner.run("/usr/sbin/sysctl", ["net.inet.ip.forwarding"]).output
         let caffeinate = try CommandRunner.run("/usr/bin/pgrep", ["-af", "caffeinate"])
         let arp = try? CommandRunner.run("/usr/sbin/arp", ["-an"]).output
-        let pfCheck = try? CommandRunner.run("/usr/bin/sudo", ["-n", "/sbin/pfctl", "-a", "com.apple/xboxvpn", "-s", "nat"]).output
+        let pfCheck = try? CommandRunner.run("/usr/bin/sudo", ["-n", "/sbin/pfctl", "-s", "nat"]).output
+        let guardCheck = try? CommandRunner.run("/bin/launchctl", ["print", "system/local.openclaw.xbox-vpn-guard"]).output
 
         let interfaceStates = mergedInterfaceStates(from: ifconfigAll)
         let ethernetState = interfaceStates.first { $0.name == resolved.ethernetInterface }
@@ -64,6 +65,8 @@ struct VPNService {
         snapshot.xboxVisibleOnLAN = hasRoute(to: resolved.xboxAddress, routes: routes) || hasARPEntry(for: resolved.xboxAddress, arpText: arp)
         snapshot.ipForwardingEnabled = forwarding.contains(": 1")
         snapshot.caffeinateRunning = caffeinate.status == 0 && !caffeinate.output.isEmpty
+        snapshot.guardInstalled = guardCheck?.contains("/Library/LaunchDaemons/local.openclaw.xbox-vpn-guard.plist") ?? false
+        snapshot.guardRunning = guardCheck?.contains("state = running") ?? false
 
         if let pfCheck, !pfCheck.isEmpty {
             snapshot.pfAnchorStatus = pfCheck
@@ -89,7 +92,7 @@ struct VPNService {
             ),
             StatusItem(
                 title: "IP на Mac",
-                detail: snapshot.ethernetHasExpectedIP ? "\(resolved.macAddress) уже назначен." : "Ожидаемый IP \(resolved.macAddress) не найден на \(resolved.ethernetInterface).",
+                detail: snapshot.ethernetHasExpectedIP ? "\(resolved.macAddress) уже назначен." : "macOS сбросила \(resolved.ethernetInterface) в DHCP/self-assigned режим, поэтому Xbox теряет шлюз.",
                 level: snapshot.ethernetHasExpectedIP ? .ok : .warning
             ),
             StatusItem(
@@ -106,8 +109,15 @@ struct VPNService {
             ),
             StatusItem(
                 title: "IP-форвардинг",
-                detail: snapshot.ipForwardingEnabled ? "Включен." : "Выключен.",
+                detail: snapshot.ipForwardingEnabled ? "Включен." : "Выключен. Без него Mac не пересылает пакеты Xbox в VPN.",
                 level: snapshot.ipForwardingEnabled ? .ok : .error
+            ),
+            StatusItem(
+                title: "Автопочинка",
+                detail: snapshot.guardRunning
+                    ? "LaunchDaemon guard запущен и будет возвращать Ethernet, forwarding и NAT после сбросов."
+                    : "Guard не запущен. Нажми «Включить», чтобы приложение поставило устойчивую автопочинку.",
+                level: snapshot.guardRunning ? .ok : .warning
             ),
             StatusItem(
                 title: "Защита от сна",
@@ -174,9 +184,14 @@ struct VPNService {
         }
 
         VPN_IF=$(/sbin/ifconfig -a | /usr/bin/awk '
-        /^utun[0-9]+:/ { iface=$1; sub(":", "", iface) }
-        /inet / && iface ~ /^utun/ && $2 !~ /^127\\./ { print iface; exit }
+        /^[^[:space:]].*: flags=/ { iface=$1; sub(":", "", iface) }
+        $1 == "inet" && iface ~ /^utun/ && $2 !~ /^127\\./ { print iface; exit }
         ')
+
+        route_if="$(/sbin/route -n get 1.1.1.1 2>/dev/null | /usr/bin/awk '$1 == "interface:" { print $2; exit }')"
+        if [[ "$route_if" == utun* ]]; then
+          VPN_IF="$route_if"
+        fi
 
         if [[ -z "${VPN_IF:-}" ]]; then
           echo "Не найден активный VPN-интерфейс utunX с IPv4."
@@ -224,12 +239,162 @@ struct VPNService {
         echo "Mac: $ETH_IF -> $MAC_IP"
         echo "VPN: $VPN_IF"
         echo "Xbox: $XBOX_IP"
+        echo
+        echo "Ставлю системную автопочинку, чтобы macOS не сбрасывала Xbox-сеть обратно в 169.254.x.x..."
+        \(buildInstallGuardScriptBody(for: config))
+        echo "Guard: local.openclaw.xbox-vpn-guard установлен и запущен."
         echo "Если на Xbox всё уже выставлено, теперь можно перезагрузить Xbox и потом снова проверить статус."
         """
     }
 
     func buildReconnectScript(for config: ResolvedConfig) -> String {
         buildStartScript(for: config)
+    }
+
+    private func buildInstallGuardScriptBody(for config: ResolvedConfig) -> String {
+        let guardScript = buildGuardScript(for: config)
+        let plist = buildGuardPlist()
+
+        return """
+        /bin/mkdir -p /usr/local/sbin
+        /bin/cat > /usr/local/sbin/openclaw-xbox-vpn-guard <<'GUARD_SCRIPT'
+        \(guardScript)
+        GUARD_SCRIPT
+        /usr/sbin/chown root:wheel /usr/local/sbin/openclaw-xbox-vpn-guard
+        /bin/chmod 755 /usr/local/sbin/openclaw-xbox-vpn-guard
+
+        /bin/cat > /Library/LaunchDaemons/local.openclaw.xbox-vpn-guard.plist <<'GUARD_PLIST'
+        \(plist)
+        GUARD_PLIST
+        /usr/sbin/chown root:wheel /Library/LaunchDaemons/local.openclaw.xbox-vpn-guard.plist
+        /bin/chmod 644 /Library/LaunchDaemons/local.openclaw.xbox-vpn-guard.plist
+        /bin/launchctl bootout system /Library/LaunchDaemons/local.openclaw.xbox-vpn-guard.plist >/dev/null 2>&1 || true
+        /bin/launchctl bootstrap system /Library/LaunchDaemons/local.openclaw.xbox-vpn-guard.plist
+        /bin/launchctl kickstart -k system/local.openclaw.xbox-vpn-guard
+        """
+    }
+
+    private func buildGuardPlist() -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>Label</key>
+          <string>local.openclaw.xbox-vpn-guard</string>
+          <key>ProgramArguments</key>
+          <array>
+            <string>/usr/local/sbin/openclaw-xbox-vpn-guard</string>
+          </array>
+          <key>RunAtLoad</key>
+          <true/>
+          <key>KeepAlive</key>
+          <true/>
+          <key>StandardOutPath</key>
+          <string>/var/log/openclaw-xbox-vpn-guard.stdout.log</string>
+          <key>StandardErrorPath</key>
+          <string>/var/log/openclaw-xbox-vpn-guard.stderr.log</string>
+        </dict>
+        </plist>
+        """
+    }
+
+    private func buildGuardScript(for config: ResolvedConfig) -> String {
+        """
+        #!/bin/bash
+        set -u
+
+        ETH_IF="\(config.ethernetInterface)"
+        MAC_IP="\(config.macAddress)"
+        XBOX_IP="\(config.xboxAddress)"
+        SUBNET_MASK="255.255.255.0"
+        SOURCE_CIDR="10.0.0.0/24"
+        PF_RULES_FILE="/var/run/openclaw-xbox-vpn.pf.conf"
+        LOG_FILE="/var/log/openclaw-xbox-vpn-guard.log"
+        CHECK_INTERVAL="10"
+
+        log() {
+          /bin/echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE"
+        }
+
+        detect_vpn_if() {
+          local route_if
+          route_if="$(/sbin/route -n get 1.1.1.1 2>/dev/null | /usr/bin/awk '$1 == "interface:" { print $2; exit }')"
+          if [[ "$route_if" == utun* ]]; then
+            /bin/echo "$route_if"
+            return 0
+          fi
+
+          /sbin/ifconfig -a | /usr/bin/awk '
+            /^[^[:space:]].*: flags=/ { iface=$1; sub(":", "", iface) }
+            $1 == "inet" && iface ~ /^utun/ && $2 !~ /^127\\./ { print iface; exit }
+          '
+        }
+
+        interface_has_ip() {
+          /sbin/ifconfig "$ETH_IF" 2>/dev/null | /usr/bin/grep -q "inet $MAC_IP "
+        }
+
+        forwarding_enabled() {
+          /usr/sbin/sysctl -n net.inet.ip.forwarding 2>/dev/null | /usr/bin/grep -q '^1$'
+        }
+
+        nat_points_to_vpn() {
+          local vpn_if="$1"
+          /sbin/pfctl -s nat 2>/dev/null | /usr/bin/grep -q "nat on $vpn_if inet from $SOURCE_CIDR to any -> ($vpn_if)"
+        }
+
+        ensure_state() {
+          local vpn_if
+          vpn_if="$(detect_vpn_if)"
+
+          if [[ -z "${vpn_if:-}" ]]; then
+            log "waiting: no IPv4 utun VPN interface"
+            return 0
+          fi
+
+          if ! /sbin/ifconfig "$ETH_IF" >/dev/null 2>&1; then
+            log "waiting: $ETH_IF is not present"
+            return 0
+          fi
+
+          if ! /sbin/ifconfig "$ETH_IF" | /usr/bin/grep -q "status: active"; then
+            log "waiting: $ETH_IF link is not active"
+            return 0
+          fi
+
+          if ! forwarding_enabled; then
+            /usr/sbin/sysctl -w net.inet.ip.forwarding=1 >/dev/null
+            log "fixed: enabled IPv4 forwarding"
+          fi
+
+          if ! interface_has_ip; then
+            /sbin/ifconfig "$ETH_IF" "$MAC_IP" netmask "$SUBNET_MASK" up
+            log "fixed: assigned $MAC_IP/24 to $ETH_IF"
+          fi
+
+          if ! nat_points_to_vpn "$vpn_if"; then
+            /bin/cat > "$PF_RULES_FILE" <<EOF
+        nat on $vpn_if from $SOURCE_CIDR to any -> ($vpn_if) static-port
+        pass in on $ETH_IF
+        pass out on $ETH_IF
+        EOF
+            /sbin/pfctl -F nat >/dev/null 2>&1 || true
+            /sbin/pfctl -Ef "$PF_RULES_FILE" >/dev/null 2>&1
+            log "fixed: loaded NAT $SOURCE_CIDR -> $vpn_if"
+          fi
+
+          /sbin/pfctl -k "$XBOX_IP" >/dev/null 2>&1 || true
+        }
+
+        log "started: guarding $ETH_IF for Xbox VPN"
+
+        while true; do
+          ensure_state
+          /bin/sleep "$CHECK_INTERVAL"
+        done
+        """
     }
 
     private func chooseEthernetInterface(
