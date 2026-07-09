@@ -1,6 +1,6 @@
 import Foundation
 
-struct VPNService {
+struct VPNService: Sendable {
     let preferredEthernetInterface: String?
     let macAddress: String
     let xboxAddress: String
@@ -336,6 +336,15 @@ struct VPNService {
           /sbin/ifconfig "$ETH_IF" 2>/dev/null | /usr/bin/grep -q "inet $MAC_IP "
         }
 
+        remove_self_assigned_ips() {
+          /sbin/ifconfig "$ETH_IF" 2>/dev/null | /usr/bin/awk '$1 == "inet" && $2 ~ /^169\\.254\\./ { print $2 }' | while read -r ip; do
+            if [[ -n "${ip:-}" ]]; then
+              /sbin/ifconfig "$ETH_IF" inet "$ip" delete >/dev/null 2>&1 || true
+              log "fixed: removed self-assigned $ip from $ETH_IF"
+            fi
+          done
+        }
+
         forwarding_enabled() {
           /usr/sbin/sysctl -n net.inet.ip.forwarding 2>/dev/null | /usr/bin/grep -q '^1$'
         }
@@ -373,6 +382,8 @@ struct VPNService {
             /sbin/ifconfig "$ETH_IF" "$MAC_IP" netmask "$SUBNET_MASK" up
             log "fixed: assigned $MAC_IP/24 to $ETH_IF"
           fi
+
+          remove_self_assigned_ips
 
           if ! nat_points_to_vpn "$vpn_if"; then
             /bin/cat > "$PF_RULES_FILE" <<EOF

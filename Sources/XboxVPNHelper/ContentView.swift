@@ -22,18 +22,19 @@ final class AppViewModel: ObservableObject {
             defer { isBusy = false }
 
             do {
-                let freshSnapshot = try service.collectSnapshot()
-                snapshot = freshSnapshot
+                let result = try await Task.detached { [service] in
+                    let freshSnapshot = try service.collectSnapshot()
+                    let generatedScript = freshSnapshot.resolvedConfig.map { service.buildStartScript(for: $0) } ?? ""
+                    return (freshSnapshot, generatedScript)
+                }.value
 
-                if let config = freshSnapshot.resolvedConfig {
-                    generatedScript = service.buildStartScript(for: config)
-                }
-
+                snapshot = result.0
+                generatedScript = result.1
                 lastUpdatedText = Self.timestampFormatter.string(from: Date())
                 if setupStage == .verifyingAfterXboxReboot {
-                    setupStage = freshSnapshot.overallLevel == .error ? .readyForXboxReboot : .complete
+                    setupStage = result.0.overallLevel == .error ? .readyForXboxReboot : .complete
                 }
-                log = buildSummary(from: freshSnapshot)
+                log = buildSummary(from: result.0)
             } catch {
                 log = "Проверка сорвалась: \(error.localizedDescription)"
             }

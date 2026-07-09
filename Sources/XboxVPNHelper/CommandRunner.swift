@@ -33,11 +33,26 @@ enum CommandRunner {
             throw CommandError.launchFailed(([launchPath] + arguments).joined(separator: " "))
         }
 
-        process.waitUntilExit()
+        let group = DispatchGroup()
+        let outputData = LockedData()
+        let errorData = LockedData()
 
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let combined = outputData + errorData
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputData.set(outputPipe.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            errorData.set(errorPipe.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+
+        process.waitUntilExit()
+        group.wait()
+
+        let combined = outputData.get() + errorData.get()
         let output = String(decoding: combined, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 
         return CommandResult(output: output, status: process.terminationStatus)
@@ -45,6 +60,23 @@ enum CommandRunner {
 
     static func runShell(_ script: String) throws -> CommandResult {
         try run("/bin/zsh", ["-lc", script])
+    }
+}
+
+private final class LockedData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func set(_ newData: Data) {
+        lock.lock()
+        data = newData
+        lock.unlock()
+    }
+
+    func get() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }
 
