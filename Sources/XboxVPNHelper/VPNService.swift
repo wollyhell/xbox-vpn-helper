@@ -64,12 +64,14 @@ struct VPNService: Sendable {
             .map(\.name)
         snapshot.xboxVisibleOnLAN = hasRoute(to: resolved.xboxAddress, routes: routes) || hasARPEntry(for: resolved.xboxAddress, arpText: arp)
         snapshot.ipForwardingEnabled = forwarding.contains(": 1")
+        snapshot.vpnMTUReady = vpnMTUReady(interface: resolved.detectedVPNInterface, ifconfigAll: ifconfigAll)
         snapshot.caffeinateRunning = caffeinate.status == 0 && !caffeinate.output.isEmpty
         snapshot.guardInstalled = guardCheck?.contains("/Library/LaunchDaemons/local.openclaw.xbox-vpn-guard.plist") ?? false
         snapshot.guardRunning = guardCheck?.contains("state = running") ?? false
 
         if let pfCheck, !pfCheck.isEmpty {
             snapshot.pfAnchorStatus = pfCheck
+            snapshot.xboxLivePortForwardReady = pfCheck.contains("port = 3074 -> \(resolved.xboxAddress) port 3074")
         }
 
         snapshot.items = [
@@ -113,6 +115,20 @@ struct VPNService: Sendable {
                 level: snapshot.ipForwardingEnabled ? .ok : .error
             ),
             StatusItem(
+                title: "Xbox 360 Live MTU",
+                detail: snapshot.vpnMTUReady
+                    ? "VPN MTU готов для крупных Xbox Live UDP-пакетов."
+                    : "VPN MTU ниже 1380 или VPN ещё не найден. Для GTA IV/Xbox 360 Live приложение выставит 1380 при запуске.",
+                level: snapshot.vpnMTUReady ? .ok : .warning
+            ),
+            StatusItem(
+                title: "Xbox Live 3074",
+                detail: snapshot.xboxLivePortForwardReady
+                    ? "UDP/TCP 3074 перенаправлен на Xbox для Xbox 360 Live."
+                    : "Не удалось подтвердить перенаправление 3074 без прав администратора, либо правило ещё не применено.",
+                level: snapshot.xboxLivePortForwardReady ? .ok : .unknown
+            ),
+            StatusItem(
                 title: "Автопочинка",
                 detail: snapshot.guardRunning
                     ? "LaunchDaemon guard запущен и будет возвращать Ethernet, forwarding и NAT после сбросов."
@@ -144,6 +160,8 @@ struct VPNService: Sendable {
         XBOX_IP="\(config.xboxAddress)"
         SUBNET_MASK="255.255.255.0"
         SOURCE_CIDR="10.0.0.0/24"
+        XBOX_LIVE_MTU="1380"
+        XBOX_LIVE_PORT="3074"
         ANCHOR_NAME="com.apple/xboxvpn"
         PF_RULES_FILE="/tmp/wolly_well_games.xboxvpn.pf.conf"
 
@@ -198,6 +216,9 @@ struct VPNService: Sendable {
           exit 1
         fi
 
+        /usr/bin/printf "Включаю режим Xbox 360 Live/GTA IV: MTU %s на %s...\\n" "$XBOX_LIVE_MTU" "$VPN_IF"
+        /sbin/ifconfig "$VPN_IF" mtu "$XBOX_LIVE_MTU" || true
+
         /usr/bin/nohup /usr/bin/caffeinate -disu >/tmp/xboxvpnhelper-caffeinate.log 2>&1 &
         /usr/bin/sudo -n true >/dev/null 2>&1 || true
         /usr/bin/printf "Настраиваю энергосбережение...\\n"
@@ -224,8 +245,13 @@ struct VPNService: Sendable {
 
         /bin/cat >"$PF_RULES_FILE" <<EOF
         nat on $VPN_IF from $SOURCE_CIDR to any -> ($VPN_IF) static-port
-        pass in on $ETH_IF
-        pass out on $ETH_IF
+        rdr pass on $VPN_IF inet proto udp from any to ($VPN_IF) port $XBOX_LIVE_PORT -> $XBOX_IP port $XBOX_LIVE_PORT
+        rdr pass on $VPN_IF inet proto tcp from any to ($VPN_IF) port $XBOX_LIVE_PORT -> $XBOX_IP port $XBOX_LIVE_PORT
+        pass quick on $ETH_IF inet from $SOURCE_CIDR to any keep state
+        pass quick on $ETH_IF inet from any to $SOURCE_CIDR keep state
+        pass quick on $VPN_IF inet proto { tcp udp icmp } from any to any keep state
+        pass quick proto udp from any to any port { 53 88 500 3074 3544 4500 } keep state
+        pass quick proto tcp from any to any port { 53 80 443 3074 } flags S/SA keep state
         EOF
 
         /bin/cat "$PF_RULES_FILE" | /sbin/pfctl -Ef -
@@ -310,6 +336,8 @@ struct VPNService: Sendable {
         XBOX_IP="\(config.xboxAddress)"
         SUBNET_MASK="255.255.255.0"
         SOURCE_CIDR="10.0.0.0/24"
+        XBOX_LIVE_MTU="1380"
+        XBOX_LIVE_PORT="3074"
         PF_RULES_FILE="/var/run/openclaw-xbox-vpn.pf.conf"
         LOG_FILE="/var/log/openclaw-xbox-vpn-guard.log"
         CHECK_INTERVAL="10"
@@ -354,6 +382,25 @@ struct VPNService: Sendable {
           /sbin/pfctl -s nat 2>/dev/null | /usr/bin/grep -q "nat on $vpn_if inet from $SOURCE_CIDR to any -> ($vpn_if)"
         }
 
+        xbox_live_forward_ready() {
+          local vpn_if="$1"
+          /sbin/pfctl -s nat 2>/dev/null | /usr/bin/grep -q "port = $XBOX_LIVE_PORT -> $XBOX_IP port $XBOX_LIVE_PORT"
+        }
+
+        vpn_mtu_ready() {
+          local vpn_if="$1"
+          /sbin/ifconfig "$vpn_if" 2>/dev/null | /usr/bin/awk -v min_mtu="$XBOX_LIVE_MTU" '
+            /mtu / {
+              for (i = 1; i <= NF; i++) {
+                if ($i == "mtu" && (i + 1) <= NF && $(i + 1) >= min_mtu) {
+                  found = 1
+                }
+              }
+            }
+            END { exit found ? 0 : 1 }
+          '
+        }
+
         ensure_state() {
           local vpn_if
           vpn_if="$(detect_vpn_if)"
@@ -378,6 +425,11 @@ struct VPNService: Sendable {
             log "fixed: enabled IPv4 forwarding"
           fi
 
+          if ! vpn_mtu_ready "$vpn_if"; then
+            /sbin/ifconfig "$vpn_if" mtu "$XBOX_LIVE_MTU" >/dev/null 2>&1 || true
+            log "fixed: set $vpn_if MTU to $XBOX_LIVE_MTU for Xbox 360 Live"
+          fi
+
           if ! interface_has_ip; then
             /sbin/ifconfig "$ETH_IF" "$MAC_IP" netmask "$SUBNET_MASK" up
             log "fixed: assigned $MAC_IP/24 to $ETH_IF"
@@ -385,15 +437,20 @@ struct VPNService: Sendable {
 
           remove_self_assigned_ips
 
-          if ! nat_points_to_vpn "$vpn_if"; then
+          if ! nat_points_to_vpn "$vpn_if" || ! xbox_live_forward_ready "$vpn_if"; then
             /bin/cat > "$PF_RULES_FILE" <<EOF
         nat on $vpn_if from $SOURCE_CIDR to any -> ($vpn_if) static-port
-        pass in on $ETH_IF
-        pass out on $ETH_IF
+        rdr pass on $vpn_if inet proto udp from any to ($vpn_if) port $XBOX_LIVE_PORT -> $XBOX_IP port $XBOX_LIVE_PORT
+        rdr pass on $vpn_if inet proto tcp from any to ($vpn_if) port $XBOX_LIVE_PORT -> $XBOX_IP port $XBOX_LIVE_PORT
+        pass quick on $ETH_IF inet from $SOURCE_CIDR to any keep state
+        pass quick on $ETH_IF inet from any to $SOURCE_CIDR keep state
+        pass quick on $vpn_if inet proto { tcp udp icmp } from any to any keep state
+        pass quick proto udp from any to any port { 53 88 500 3074 3544 4500 } keep state
+        pass quick proto tcp from any to any port { 53 80 443 3074 } flags S/SA keep state
         EOF
             /sbin/pfctl -F nat >/dev/null 2>&1 || true
             /sbin/pfctl -Ef "$PF_RULES_FILE" >/dev/null 2>&1
-            log "fixed: loaded NAT $SOURCE_CIDR -> $vpn_if"
+            log "fixed: loaded Xbox 360 Live NAT and 3074 forward $SOURCE_CIDR -> $vpn_if"
           fi
 
           /sbin/pfctl -k "$XBOX_IP" >/dev/null 2>&1 || true
@@ -562,6 +619,29 @@ struct VPNService: Sendable {
         }
 
         return nil
+    }
+
+    private func vpnMTUReady(interface name: String?, ifconfigAll: String) -> Bool {
+        guard let name else {
+            return false
+        }
+
+        for line in ifconfigAll.components(separatedBy: .newlines) {
+            guard line.hasPrefix("\(name):") else {
+                continue
+            }
+
+            let parts = line.split(whereSeparator: \.isWhitespace)
+            guard let index = parts.firstIndex(of: "mtu"),
+                  parts.indices.contains(parts.index(after: index)),
+                  let mtu = Int(parts[parts.index(after: index)]) else {
+                return false
+            }
+
+            return mtu >= 1380
+        }
+
+        return false
     }
 
     private func isInterfaceHeader(_ line: String) -> Bool {

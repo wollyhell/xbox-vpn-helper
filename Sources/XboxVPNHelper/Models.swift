@@ -94,6 +94,8 @@ struct AppSnapshot {
     var staleIPInterfaces: [String] = []
     var xboxVisibleOnLAN = false
     var ipForwardingEnabled = false
+    var vpnMTUReady = false
+    var xboxLivePortForwardReady = false
     var caffeinateRunning = false
     var guardInstalled = false
     var guardRunning = false

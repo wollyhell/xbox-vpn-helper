@@ -23,6 +23,7 @@ The project was built from a real-world internal setup at `wolly_well_games` and
 - Detects the active `utunX` VPN interface automatically.
 - Detects the current USB/Ethernet interface used for Xbox.
 - Applies the common Mac-side setup for `10.0.0.1/24`, IPv4 forwarding, and `pf` NAT.
+- Applies the Xbox 360 Live compatibility path used by GTA IV: VPN MTU `1380`, static-port NAT, and explicit TCP/UDP `3074` forwarding to the console.
 - Offers a simple one-button flow plus an advanced status and script preview mode.
 - Detects and cleans stale `10.0.0.1` assignments on the wrong `enX` interface.
 - Guides the user through the “configure Mac -> reboot Xbox -> verify again” loop.
@@ -47,7 +48,8 @@ At a high level, the app does four things:
    - IPv4 forwarding
    - local `10.0.0.1/24` address
 3. Rebuilds `pf` NAT rules so Xbox traffic goes out through the active `utunX`.
-4. Verifies the route again after the Xbox is rebooted.
+4. Keeps the Xbox 360 Live path open for backward-compatible games that rely on UDP `3074`.
+5. Verifies the route again after the Xbox is rebooted.
 
 It also detects one of the nastiest real-world failure cases: when `10.0.0.1` is still attached to an old interface after the USB adapter reconnects. In that case, the app can clean up the stale interface assignment before reapplying the intended configuration.
 
